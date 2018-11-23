@@ -1,0 +1,120 @@
+---
+title: "Introduction to the Tidyverse"
+output: 
+  learnr::tutorial:
+    progressive: true
+    allow_skip: true
+    df_print: default
+runtime: shiny_prerendered
+---
+
+```{r setup, include=FALSE}
+library(learnr)
+library(tidyverse)
+tutorial_options(exercise.timelimit = 60)
+```
+
+## Welcome
+
+This tutorial will teach you how to understand data with the Tidyverse. We will be begin by looking at dplyr and ggplot2.
+
+### Load data
+
+```{r data}
+all_data <- readRDS("data/all_data.RDS")
+```
+
+## dplyr
+
+dplyr is a grammar of data manipulation, providing a consistent set of verbs that help you solve the most common data manipulation challenges:
+
+### Select
+
+```{r select, exercise = TRUE}
+select(all_data, year, month, age, term_deposit)
+```
+
+<div id="mpg-hint">
+**Hint:** Type `select(...)` and then click the blue button.
+</div>
+
+```{r select-check, echo = FALSE}
+# checking code
+```
+
+### Filter
+
+```{r filter, exercise = TRUE}
+filter(all_data, month == "dec")
+```
+
+### Mutate
+
+```{r filter-check, exercise = TRUE}
+mutate(all_data, log_age = log(age))
+```
+
+## ggplot
+
+### Density
+
+```{r plot1, exercise = TRUE}
+ggplot(all_data, aes(age)) +
+  geom_density()
+```
+
+<div id="help-hint">
+**Hint:** Type `ggplot(...)` and then click the blue button.
+</div>
+
+```{r plot1-check, echo = FALSE}
+# checking code
+```
+
+### With groups
+
+```{r plot2, exercise = TRUE}
+ggplot(all_data, aes(age, color = term_deposit)) +
+  geom_density()
+```
+
+<div id="help-hint">
+**Hint:** Type `ggplot(...)` and then click the blue button.
+</div>
+
+```{r plot2-check, echo = FALSE}
+# checking code
+```
+
+## Exercises
+
+```{r quiz1, echo = FALSE}
+quiz(caption = "Use the code chunk above to help answer these questions.",
+  question("What verb do you use to create new features?",
+           answer("select"), 
+           answer("filter"),
+           answer("mutate", correct = TRUE),
+           incorrect = "Hint: Creating new features involves changing your data.", 
+           allow_retry = TRUE
+  ),
+  question("What command determines the visual properties in a ggplot?",
+           answer("geom"), 
+           answer("aes", correct = TRUE),
+           answer("ggplot"),
+           incorrect = "Hint: Aesthetics is another name for visual properties.", 
+           allow_retry = TRUE
+  ),
+  question("Which items are valid geometries?",
+           type = "multiple",
+           answer("map"), 
+           answer("point", correct = TRUE),
+           answer("density", correct = TRUE),
+           incorrect = "Hint: Geometries are used to plot your data.", 
+           allow_retry = TRUE
+  )
+)
+```
+
+### Congratulations
+
+You've now met some basic dplyr verbs and ggplot2 commands.

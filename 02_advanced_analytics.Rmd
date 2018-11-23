@@ -1,0 +1,322 @@
+---
+title: "Bank Marketing Conversion"
+output:
+  html_notebook:
+    code_folding: hide
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+library(tidyverse)
+library(plotly)
+library(pROC)
+library(broom)
+library(caret)
+# library(randomForest)
+library(ranger)
+```
+
+## Overview
+
+We are working with a dataset from a Portuguese bank.  The data categorizes direct marketing efforts (phone calls) designed to sell term deposit products.  The [dataset](https://archive.ics.uci.edu/ml/datasets/Bank+Marketing) was donated to UCI's Machine Learning Repository.
+
+The goal of this analysis is to use the data to tailor future marketing efforts.  The "client" has a known cost per interaction, and would like to deploy those costs in scenarios that maximize the return on their investment.
+
+### General Approach
+
+We explore two modeling methods that can be used to estimate the exepcted value of customer contacts in future marketing campaigns.  First, we apply a logistic regression that gives an easily interpertable model for scoring the likliehood that a customer subscribes; this can produce a continuous "expected customer value."
+
+Second, we build a random forest model that provides a more "black box" scoring model.  Additionally, this model provides discrete categorizations rather than probabalistic estimates.  This means that each cohort has a shared "expected value."  
+
+To partially mitigate the starkness of this approach and the large percentage of customers categorized as not likely to subscribe to a term deposit, we apply a "multi-stage random forest model," by building random forest models on the cohort of customers designiated as unlikely to subscribe to a term deposit.  This allows both a more nuanced set of "expected customer values" and allows for the possibility of capturing a larger percentage of the customers who are likely to subscribe.
+
+These approaches are far from exhaustive.  They show, however, that analytic techniques can help banks to deploy scarce resources to higher-than-average value marketing targets.
+
+### Deliverables
+
+- Project Overview Document
+- Shiny Application for stratifying and scoring future cohorts
+    - Market to all
+    - Market to some - Logistic Regression with different cutoffs
+    - Market to some - Multi-level Random Forest Model
+- Tutorial Discussing Technical Implementation of Logistic Regression and Random Forest Model
+
+## Analysis
+
+### Load Data
+
+```{r}
+
+# raw_data <- read_delim("data/bank-additional/bank-additional-full.csv", ";")
+# 
+# names(raw_data) <- stringr::str_replace_all(names(raw_data), "[.]", "_")
+
+raw_data <- readRDS("data/all_data.RDS")
+
+all_data <- raw_data %>%
+  mutate(job = str_replace_all(job, "[.-]", "")) %>%
+  na.omit
+```
+
+### Training Data For Analysis
+
+```{r}
+set.seed(3456)
+trainIndex <- createDataPartition(all_data$term_deposit, p = .25, 
+                                  list = FALSE, 
+                                  times = 1)
+
+training_and_test_data <- all_data %>%
+  mutate(
+    education = case_when(
+      education %in% c("basic.4y", "basic.6y", "illiterate") ~ "less.than.5.years",
+      TRUE ~ education
+    ),
+    train_or_test = case_when(
+      row_number() %in% trainIndex ~ "train",
+      TRUE ~ "test"
+    )
+  ) %>%
+  select(-nearZeroVar(.)) %>%
+  select(-in_default) %>%
+  mutate_at(
+    vars(job, marital, education, housing_loan, personal_loan, contact, month, day_of_week, prior_outcome, term_deposit),
+    funs(as_factor(.))) %>%
+  mutate(term_deposit = fct_relevel(term_deposit, "yes", "no")) %>%
+  group_by(train_or_test) %>%
+  nest() 
+
+
+training_data <- training_and_test_data %>%
+  filter(train_or_test == "train") %>%
+  unnest() %>%
+  select(-train_or_test)
+
+
+testing_data <- training_and_test_data %>%
+  filter(train_or_test == "test") %>%
+  unnest() %>%
+  select(-train_or_test) 
+
+
+
+
+```
+
+
+### Logistic Regression
+
+In this context, a negative co-efficient makes it more likely that someone will purchase a term_deposit (i.e. a positive number is "no purchase").
+
+```{r}
+
+m1 <- glm(term_deposit ~ ., binomial, training_data)
+
+summary(m1)
+
+```
+
+
+Examine all statistically significant indicators (p.value < .05) in descending order of the absolute value of the coefficient.
+
+```{r}
+
+tidy(m1) %>% 
+  filter(p.value < .05) %>% 
+  arrange(desc(abs(estimate)))
+
+
+```
+
+
+```{r}
+
+# Predict
+pred <- bind_rows("train" = training_data, "test" = testing_data, .id = "data") %>%
+  mutate(
+    pred = predict(m1, ., type = "response")) %>%
+  mutate(decile = ntile(desc(pred), 10)) %>%
+  select(data, term_deposit, pred, decile)
+
+# ROC plot
+pred %>%
+  filter(data == "test") %>%
+  roc(term_deposit ~ pred, .) %>%
+  plot.roc(., print.auc = TRUE)
+
+# Lift plot
+pred %>%
+  group_by(data, decile) %>%
+  summarize(percent = 100 * (mean(ifelse(term_deposit == "no", 0, 1)))) %>%
+  ggplot(aes(decile, percent, fill = data)) + geom_bar(stat = "Identity", position = "dodge") +
+  ggtitle("Lift chart for logistic regression model")
+  
+
+# Sensitivity Vs Specificity
+roc_output <- roc(term_deposit ~ pred, pred)
+sensitivity <- data_frame(value = roc_output$sensitivities, type = "sensitivity", thresholds = roc_output$thresholds)
+specificity <- data_frame(value = roc_output$specificities, type = "specificity", thresholds = roc_output$thresholds)
+# roc <- data_frame(value = roc_output$sensitivities/roc_output$specificities, type = "roc", thresholds = roc_output$thresholds)
+
+data_to_plot <- bind_rows(sensitivity, specificity)
+
+ggplot(data = data_to_plot, mapping = aes(color = type, x = thresholds, y = value)) + geom_line() + scale_x_continuous(name = "thresholds", breaks = seq(0, 1, .05)) + scale_y_continuous(name = "value", breaks = seq(0, 1, .1))
+```
+
+```{r}
+
+# Picke a cutoff where the specificity is similar to the specificity of the random forest model, so that you compare sensitivities with similar TNRs.
+
+cutoff <- .88
+
+sample_test_logistic <- testing_data %>%
+  mutate(
+    predicted = case_when(
+      predict(m1, ., type = 'response') <= cutoff ~ "yes",
+      TRUE ~ "no")
+  )
+  
+confusion_matrix_logistic <- confusionMatrix(sample_test_logistic$predicted, sample_test_logistic$term_deposit)
+
+confusion_matrix_logistic
+prop.table(confusion_matrix_logistic$table)
+
+```
+
+
+### Random Forest Methodology Overview
+
+- Preprocessing
+- Training and Test Sets
+- RandomForests
+    - Untuned
+    - Tuned with K-Fold Cross Validation
+    - Tuned with Boot
+- Optimizing on Kappa
+
+
+
+```{r}
+
+training_data_to_use <- training_data 
+
+ranger_model <- ranger(term_deposit ~  . , data = training_data_to_use )
+
+
+trainctrl <- trainControl(verboseIter = TRUE, method="cv", number=3, savePredictions = TRUE, sampling = "down",
+                          classProbs = TRUE)
+
+
+caret_cv <- train(term_deposit ~ ., method = 'ranger', data = training_data_to_use, trControl = trainctrl, metric = 'Kappa', tuneLength = 5, importance = 'impurity')
+
+
+
+
+
+```
+
+
+```{r}
+
+saveRDS(ranger_model, "data/ranger_model.RDS")
+saveRDS(caret_cv, "data/caret_cv.RDS")
+
+
+# ranger_model <- readRDS("ranger_model.RDS")
+# caret_cv <- readRDS("caret_cv.RDS")
+
+
+```
+
+### Ranger Prediction
+
+```{r}
+
+sample_test_ranger <- testing_data %>%
+  mutate(
+    predicted = predictions(predict(ranger_model, .))
+  )
+  
+confusion_matrix_ranger <- confusionMatrix(sample_test_ranger$predicted, sample_test_ranger$term_deposit)
+
+confusion_matrix_ranger
+prop.table(confusion_matrix_ranger$table)
+
+```
+### Downsampled Prediction
+
+```{r}
+
+sample_caret_cv <- testing_data %>%
+  mutate(
+    predicted = predict(caret_cv, .)
+  )
+  
+confusion_matrix_ranger <- confusionMatrix(sample_caret_cv$predicted, sample_caret_cv$term_deposit)
+
+confusion_matrix_ranger
+prop.table(sample_caret_cv$table)
+
+varImp(caret_cv)
+
+```
+
+### Observations / Insights
+
+
+#### Differences Between Un-Tuned and Tuned Models
+
+#### Optimizing on Kappa Redux
+
+#### Outcomes
+
+
+#### Business Implications
+
+
+
+### All Model Outcomes 
+
+```{r}
+
+
+pred_all <- bind_rows("train" = training_data, "test" = testing_data, .id = "data") %>%
+  mutate(
+    logistic_predict_no = predict(m1, ., type = "response"),
+    ranger_predict = predictions(predict(ranger_model, .)),
+    downsample_predict = predict(caret_cv, .)
+  )
+
+saveRDS(pred_all, "data/predictions.RDS")
+
+```
+
+```{r}
+  
+summary_pred_all <- pred_all %>% 
+  mutate(
+    number_of_rf_models = case_when(
+      ranger_predict == "yes" & downsample_predict == "yes" ~ 2,
+      ranger_predict == "yes" | downsample_predict == "yes" ~ 1,
+      TRUE ~ 0
+    ),
+    optimized_cutoff_logistic = ifelse(logistic_predict_no <= cutoff, "yes", "no")
+  ) %>%
+  group_by(downsample_predict, optimized_cutoff_logistic, data) %>% 
+  summarize(
+    median_logistic_prediction = round(median(logistic_predict_no), 2),
+    average_logistic_prediction = round(mean(logistic_predict_no), 2),
+    number_yes = sum(ifelse(term_deposit == "yes", 1, 0)),
+    number_no = sum((ifelse(term_deposit == "no", 1, 0))),
+    actual_yes_percentage = round(number_yes/n(), 2),
+    total = n()
+  ) %>%
+  ungroup() %>%
+  arrange(data, desc(downsample_predict))
+  # arrange(data, desc(ninety_cutoff_logistic))
+
+
+summary_pred_all
+
+
+```

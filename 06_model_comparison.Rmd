@@ -1,0 +1,143 @@
+---
+title: "Bank Marketing Conversion"
+subtitle: "Comparison of modeling methods"
+output: html_document
+params:
+  seed: 
+    label: 'Set Seed'
+    input: numeric
+    value: 4527
+  training_size:
+    label: 'Training Size'
+    input: slider
+    min: 0.01
+    max: 0.99
+    value: 0.15
+  cutoff: 
+    label: 'Logistic Model Cutoff'
+    input: slider
+    min: 0.01
+    max: 0.99
+    value: 0.88
+  num_trees:
+    label: 'Ranger Model Trees'
+    input: slider
+    min: 1
+    max: 1000
+    value: 500
+  folds:
+    label: 'Caret Model Cross Vals'
+    input: select
+    choices: [1, 2, 3, 4, 5]
+    value: 2
+  metric: 
+    label: 'Caret Model Metric'
+    choices: [RMSE, Rsquared, Accuracy, Kappa]
+    input: select
+    value: Kappa
+---
+
+Seed set to `r params$seed`, and training size set to `r params$training_size`.
+
+```{r setup, message=FALSE, warning=FALSE, echo=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, echo=FALSE)
+library(tidyverse)
+library(plotly)
+library(pROC)
+library(broom)
+library(caret)
+library(e1071)
+library(ranger)
+```
+
+```{r data}
+raw_data <- readRDS("data/all_data.RDS")
+
+all_data <- raw_data %>%
+  mutate(job = str_replace_all(job, "[.-]", "")) %>%
+  na.omit %>%
+  mutate(education = case_when(
+    education %in% c("basic.4y", "basic.6y", "illiterate") ~ "less.than.5.years", 
+    TRUE ~ education)) %>%
+  select(-nearZeroVar(.)) %>%
+  select(-in_default) %>%
+  mutate_at(
+    vars(job, marital, education, housing_loan, personal_loan, 
+         contact, month, day_of_week, prior_outcome, term_deposit),
+    funs(as_factor(.))) %>%
+  mutate(term_deposit = fct_relevel(term_deposit, "yes", "no"))
+
+set.seed(params$seed)
+
+trainIndex <- createDataPartition(all_data$term_deposit, p = params$training_size, list = FALSE)
+
+training_data <- slice(all_data, trainIndex)
+
+testing_data <- slice(all_data, -trainIndex)
+```
+
+# Models {.tabset}
+
+## Logistic Regression
+
+Cutoff set at `r params$cutoff`.
+
+```{r logfit}
+log_model <- glm(term_deposit ~ ., binomial, training_data)
+
+log_pred <- testing_data %>%
+  mutate(p = predict(log_model, ., type = "response"),
+         predicted = as.factor(ifelse(p <= params$cutoff, "yes", "no"))) %>%
+  select(term_deposit, predicted)
+```
+
+```{r logpred}
+confusionMatrix(log_pred$predicted, log_pred$term_deposit)
+```
+
+## Ranger
+
+Number of trees set at `r params$num_trees`.
+
+```{r rangerfit}
+ranger_model <- ranger(term_deposit ~  . , data = training_data, num.trees = params$num_trees)
+
+ranger_pred <- testing_data %>%
+  mutate(predicted = predict(ranger_model, ., type = "response")$predictions) %>%
+  select(term_deposit, predicted)
+```
+
+```{r rangerpred}
+confusionMatrix(ranger_pred$predicted, ranger_pred$term_deposit)
+```
+
+## Caret
+
+Number of folds set to `r params$folds`, metric set to `r params$metric`.
+
+```{r caretfit, results=FALSE}
+trainctrl <- trainControl(verboseIter = TRUE, 
+                          method="cv", 
+                          number=params$folds, 
+                          savePredictions = TRUE, 
+                          sampling = "down",
+                          classProbs = TRUE)
+
+caret_model <- train(term_deposit ~ ., 
+                  method = "ranger", 
+                  data = training_data, 
+                  trControl = trainctrl, 
+                  metric = params$metric, 
+                  tuneLength = 5,
+                  importance = 'impurity')
+
+caret_pred <- testing_data %>%
+  mutate(predicted = predict(caret_model, .)) %>%
+  select(term_deposit, predicted)
+```
+
+```{r caretpred}
+confusionMatrix(caret_pred$predicted, caret_pred$term_deposit)
+```
+
+
