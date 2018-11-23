@@ -1,9 +1,10 @@
 ---
 title: "Bank Marketing Exploratory Analysis"
-output: html_notebook
+output: powerpoint_presentation
 ---
 
-```{r, message=FALSE}
+```{r setup, message=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
 library(tidyverse)
 library(stringr)
 library(ggplot2)
@@ -17,7 +18,7 @@ library(plotly)
 We are working with a dataset from a Portuguese bank.  The data categorizes direct marketing efforts (phone calls) designed to sell term deposit products.  The [dataset](https://archive.ics.uci.edu/ml/datasets/Bank+Marketing) was donated to UCI's Machine Learning Repository. The goal is to predict which clients are most likely to subscribe to a term deposit. Data range from May 2008 to November 2010
 
 
-```{r, message=FALSE}
+```{r, message=FALSE, eval=FALSE}
 download.file(url = "https://archive.ics.uci.edu/ml/machine-learning-databases/00222/bank-additional.zip",
               destfile = "data/bank-additional.zip")
 
@@ -27,11 +28,11 @@ unzip(zipfile = "data/bank-additional.zip",
       junkpaths = TRUE)
 ```
 
-## Read data
+## Model data set
 
 Read data and clean up column names. Remove unnecessary columns and records. Impute year and create a column for date.
 
-```{r, message=FALSE}
+```{r, message=FALSE, eval=FALSE}
 raw_data <- read_delim(file = "data/bank-additional-full.csv",
                        delim = ";",
                        col_types = cols(nr.employed = col_number()),
@@ -64,14 +65,13 @@ all_data <- all_data %>%
                           year == 2 ~ "2010")) %>%
   mutate(date = as.Date(paste0("1", month, year), "%d%b%Y"))
 
-all_data <- readRDS('data/all_data.RDS')
+save(all_data, "data/all_data.RDS")
 ```
 
 ## Insights
 
-There were far more contacts in 2008 and 2009.
-
 ```{r}
+all_data <- readRDS('data/all_data.RDS')
 
 # Monthly rollup
 dat <- all_data %>%
@@ -79,12 +79,20 @@ dat <- all_data %>%
   summarize(subscribe = sum(term_deposit == "yes"), 
             total = n(),
             percent = 100 * mean(term_deposit == "yes"))
+```
 
+### Percent subscribing
+
+```{r, fig.cap="There were far more contacts in 2008 and 2009."}
 # Percent
 xts(dat$percent, dat$date) %>%
   dygraph(main = "Percent subscribing") %>%
   dyRangeSelector()
+```
 
+### Total contacts and subscriptions
+
+```{r, fig.}
 # Totals
 with(dat, xts(cbind(Total = total, Subscribe = subscribe), date)) %>%
   dygraph(main = "Total contacts and subscriptions") %>%
@@ -93,7 +101,7 @@ with(dat, xts(cbind(Total = total, Subscribe = subscribe), date)) %>%
 
 Term deposits are correlated to some extent with macro economic indicators.
 
-```{r}
+```{r, echo=FALSE}
 p <- all_data %>%
   group_by(month_idx, year, month) %>%
   summarize(euribor3m = mean(euribor3m),
